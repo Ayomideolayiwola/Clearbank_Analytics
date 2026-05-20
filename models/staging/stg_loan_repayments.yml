@@ -1,0 +1,57 @@
+version: 2
+
+models:
+  - name: stg_loan_repayments
+    description: "Staging model for clearbank's loan repayments data. This model performs basic transformations and cleaning on the raw loan repayments data ingested from ClearBank's operational database. It serves as the foundation for downstream models that will build upon this cleaned and standardized loan repayments data."
+    columns:
+      - name: repayment_id
+        description: "Primary key."
+        data_tests:
+          - not_null
+          - unique
+      - name: loan_id
+        description: "Foreign key to the loans table, indicating which loan the repayment is associated with."
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('stg_loans')
+              field: loan_id
+      - name: customer_id
+        description: "Foreign key to the customers table, indicating which customer made the repayment."
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('stg_customers')
+              field: customer_id
+      - name: account_id
+        description: "Foreign key to the accounts table, indicating which account the repayment was made from."
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('stg_accounts')
+              field: account_id
+      - name: scheduled_repayment_date
+        description: "The date when the loan repayment was scheduled to be made."
+      - name: actual_repayment_date
+        description: "The date when the loan repayment was actually made."  
+      - name: amount_due
+        description: "The amount that was due for the loan repayment."  
+      - name: amount_paid
+        description: "The amount that was actually paid for the loan repayment."
+      - name: principal_component
+        description: "The portion of the repayment amount that goes towards the principal of the loan."
+      - name: interest_component
+        description: "The portion of the repayment amount that goes towards the interest of the loan."
+      - name: late_fee
+        description: "Any late fee applied to the loan repayment, if applicable."
+      - name: days_late
+        description: "The number of days the repayment was late, if applicable."  
+      - name: payment_method
+        description: "The method used for the loan repayment (e.g., 'bank transfer', 'card payment', 'direct debit')."
+      - name: repayment_status
+        description: "Current status of the loan repayment (e.g., 'paid', 'pending', 'late', 'missed')."
+      - name: created_at
+        description: "Timestamp when the record was created in the source system."
+      - name: updated_at
+        description: "Timestamp when the record was last updated in the source system."
+    

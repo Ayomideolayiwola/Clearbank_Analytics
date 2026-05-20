@@ -1,0 +1,51 @@
+version: 2
+
+models:
+  - name: stg_cards
+    description: "Staging model for clearbank's cards data. This model performs basic transformations and cleaning on the raw cards data ingested from ClearBank's operational database. It serves as the foundation for downstream models that will build upon this cleaned and standardized cards data."
+    columns:
+      - name: card_id
+        description: "Primary key."
+        data_tests:
+          - not_null
+          - unique
+      - name: account_id
+        description: "Foreign key to the accounts table, indicating which account the card is associated with."
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('stg_accounts')
+              field: account_id
+      - name: customer_id
+        description: "Foreign key to the customers table, indicating which customer owns the card."
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('stg_customers')
+              field: customer_id
+      - name: card_type
+        description: "Type of card (e.g., 'debit', 'credit')."
+      - name: card_network
+        description: "The card network (e.g., 'Visa', 'Mastercard')."
+      - name: card_status
+        description: "Current status of the card (e.g., 'active', 'blocked', 'expired')."
+      - name: is_contactless_enabled
+        description: "Indicates whether the card is enabled for contactless payments."
+      - name: is_online_enabled
+        description: "Indicates whether the card is enabled for online transactions."
+      - name: is_international_enabled
+        description: "Indicates whether the card is enabled for international transactions."
+      - name: daily_withdrawal_limit
+        description: "The daily withdrawal limit for the card."
+      - name: issued_date
+        description: "The date when the card was issued."
+      - name: activation_date
+        description: "The date when the card was activated, if applicable."
+      - name: expires_at
+        description: "The date when the card expires."
+      - name: cancelled_at
+        description: "The date when the card was cancelled, if applicable."
+      - name: created_at
+        description: "Timestamp when the record was created in the source system."
+      - name: updated_at
+        description: "Timestamp when the record was last updated in the source system."

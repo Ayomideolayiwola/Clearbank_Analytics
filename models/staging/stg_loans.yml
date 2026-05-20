@@ -1,0 +1,56 @@
+version: 2
+
+models:
+  - name: stg_loans
+    description: "Staging model for clearbank's loans data. This model performs basic transformations and cleaning on the raw loans data ingested from ClearBank's operational database. It serves as the foundation for downstream models that will build upon this cleaned and standardized loans data."
+    columns:
+      - name: loan_id
+        description: "Primary key."
+        data_tests:
+          - not_null
+          - unique
+      - name: customer_id
+        description: "Foreign key to the customers table, indicating which customer took out the loan."
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('stg_customers')
+              field: customer_id
+      - name: account_id
+        description: "Foreign key to the accounts table, indicating which account the loan is associated with."
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('stg_accounts')
+              field: account_id
+      - name: loan_type
+        description: "Type of loan (e.g., 'personal', 'mortgage', 'auto')."
+      - name: applied_amount
+        description: "The amount that the customer applied for when requesting the loan."
+      - name: approved_amount
+        description: "The amount that was approved for the loan, which may differ from the applied amount based on the bank's assessment."
+      - name: disbursed_amount
+        description: "The amount that was actually disbursed to the customer, which may differ from the approved amount due to fees or other adjustments."
+      - name: upfront_fee
+        description: "Any upfront fee charged for the loan, if applicable."
+      - name: currency
+        description: "The currency in which the loan is denominated (e.g., 'USD', 'EUR')."
+      - name: interest_rate
+        description: "The interest rate applicable to the loan."
+      - name: tenure_months
+        description: "The tenure of the loan in months."
+      - name: total_repayable
+        description: "The total amount that the customer is expected to repay over the course of the loan, including principal and interest."
+      - name: loan_status
+        description: "Current status of the loan (e.g., 'approved', 'disbursed', 'closed', 'defaulted')."
+      - name: application_date
+        description: "The date when the loan application was submitted."
+      - name: approval_date
+        description: "The date when the loan was approved, if applicable."
+      - name: disbursement_date
+        description: "The date when the loan was disbursed to the customer, if applicable."
+      - name: created_at
+        description: "Timestamp when the record was created in the source system."
+      - name: updated_at
+        description: "Timestamp when the record was last updated in the source system."
+    

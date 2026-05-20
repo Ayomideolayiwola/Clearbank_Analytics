@@ -1,0 +1,42 @@
+version: 2
+
+models:
+  - name: stg_accounts
+    description: "Staging model for clearbank's accounts data. This model performs basic transformations and cleaning on the raw accounts data ingested from ClearBank's operational database. It serves as the foundation for downstream models that will build upon this cleaned and standardized accounts data."
+    columns:
+      - name: account_id
+        description: "Primary key."
+        data_tests:
+          - not_null
+          - unique
+      - name: customer_id
+        description: "Foreign key to the customers table, indicating which customer owns the account."
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('stg_customers')
+              field: customer_id
+      - name: account_type
+        description: "Type of account (e.g., 'savings', 'checking')."
+      - name: sort_code
+        description: "The sort code associated with the account."
+      - name: iban
+        description: "The International Bank Account Number (IBAN) for the account."
+      - name: currency
+        description: "The currency in which the account is held (e.g., 'USD', 'EUR')."
+      - name: account_status
+        description: "Current status of the account (e.g., 'active', 'closed', 'suspended')."
+      - name: current_balance
+        description: "The current balance of the account."
+      - name: available_balance
+        description: "The available balance of the account, which may differ from the current balance due to holds or pending transactions."
+      - name: interest_rate
+        description: "The interest rate applicable to the account, if any."
+      - name: opened_date
+        description: "The date when the account was opened."
+      - name: closed_date
+        description: "The date when the account was closed, if applicable." 
+      - name: created_at
+        description: "Timestamp when the record was created in the source system."
+      - name: updated_at
+        description: "Timestamp when the record was last updated in the source system."

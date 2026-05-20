@@ -2,88 +2,54 @@ version: 2
 
 models:
   - name: stg_transactions
-    description: "Staging table for transactions. Cleaned and standardized real estate transaction data."
+    description: "Staging model for clearbank's transactions data. This model performs basic transformations and cleaning on the raw transactions data ingested from ClearBank's operational database. It serves as the foundation for downstream models that will build upon this cleaned and standardized transactions data."
     columns:
       - name: transaction_id
-        description: "Unique identifier for the transaction"
+        description: "Primary key."
         data_tests:
+          - not_null
           - unique
-          - not_null
-      - name: transaction_ref
-        description: "Reference code for the transaction, if available"
-      - name: property_id
-        description: "Foreign key to the property involved in the transaction"
+      - name: account_id
+        description: "Foreign key to the accounts table, indicating which account the transaction is associated with."
         data_tests:
           - not_null
           - relationships:
-              arguments:
-                to: ref('stg_properties')
-                field: property_id
-      - name: client_id
-        description: "Foreign key to the stg clients"
+              to: ref('stg_accounts')
+              field: account_id
+      - name: customer_id
+        description: "Foreign key to the customers table, indicating which customer made the transaction."
         data_tests:
           - not_null
           - relationships:
-              arguments:
-                to: ref('stg_clients')
-                field: client_id
-      - name: agent_id
-        description: "Foreign key to the agent involved in the transaction"
-        data_tests:
-          - not_null
-          - relationships:
-              arguments:
-                to: ref('stg_agents')
-                field: agent_id
-      - name: payment_id
-        description: "Foreign key to the payment details associated with the transaction"
-        data_tests:
-          - relationships:
-              arguments:
-                to: ref('stg_payment_details')
-                field: payment_id
-      - name: transaction_type
-        description: "Type of transaction (e.g., sale, rental)"
-        data_tests:
-          - not_null
+              to: ref('stg_customers')
+              field: customer_id
       - name: transaction_date
-        description: "Date when the transaction occurred"
-        data_tests:
-          - not_null
-      - name: agreed_price
-        description: "Agreed price for the transaction"
-        data_tests:
-          - not_null
-      - name: listing_price
-        description: "Original listing price of the property"
-        data_tests:
-          - not_null
-      - name: discount_amount
-        description: "Discount amount applied to the transaction, if any"
-        data_tests:
-          - not_null
-      - name: commission_rate
-        description: "Commission rate applied to the transaction, if any"
-        data_tests:
-          - not_null
-      - name: commission_amount
-        description: "Commission amount calculated for the transaction, if any"
-        data_tests:
-          - not_null
+        description: "The date when the transaction occurred."
+      - name: transaction_type
+        description: "Type of transaction (e.g., 'debit', 'credit')."
+      - name: counterpart_name
+        description: "The name of the counterparty involved in the transaction, if applicable."
+      - name: counterpart_acc_no
+        description: "The account number of the counterparty involved in the transaction, if applicable."
+      - name: counterpart_sort_code
+        description: "The sort code of the counterparty involved in the transaction, if applicable."
+      - name: direction
+        description: "The direction of the transaction (e.g., 'credit', 'debit')."
+      - name: transaction_amount
+        description: "The amount of the transaction."
+      - name: currency
+        description: "The currency in which the transaction was made (e.g., 'USD', 'EUR')."
+      - name: balance_after
+        description: "The account balance after the transaction was processed."
       - name: status
-        description: "Current status of the transaction (e.g., pending, completed, cancelled)"
-        data_tests:
-          - not_null
-          - accepted_values:
-              arguments:
-                values: [ 'Completed', 'Cancelled', 'Pending', 'Under Contract' ]
-      - name: contract_start
-        description: "Start date of the contract"
-      - name: contract_end
-        description: "End date of the contract"
-      - name: notes
-        description: "Additional notes or comments about the transaction"
+        description: "Current status of the transaction (e.g., 'completed', 'pending', 'failed')."
+      - name: channel
+        description: "The channel through which the transaction was made (e.g., 'online', 'branch', 'ATM')."
+      - name: reference
+        description: "A reference or description associated with the transaction, if applicable."
+      - name: initiated_at
+        description: "Timestamp when the transaction was initiated in the source system."
+      - name: settled_at
+        description: "Timestamp when the transaction was settled in the source system, if applicable."
       - name: created_at
-        description: "Timestamp when the transaction record was created"
-        
-
+        description: "Timestamp when the record was created in the source system."

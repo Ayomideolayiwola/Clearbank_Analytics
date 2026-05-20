@@ -2,18 +2,16 @@
 version: 2
 
 sources:
-  - name: real_estate                      
-    database: RAW_REAL_ESTATE              
-    schema: REALESTATE_RAW             
+  - name: clearbank                      
+    database: CLEARBANK_ANALYTICS              
+    schema: RAW_CLEARBANK            
     tables:
-      - name: regions
-      - name: cities                
-      - name: property_types
-      - name: agencies
-      - name: agents
-      - name: clients
-      - name: properties
-      - name: payment_details
+      - name: accounts
+        description: "Source table for accounts data ingested from ClearBank's operational database. Contains details of customer accounts, including balances and status."
+        
+      - name: cards
+      - name: customers
+      - name: loans
+      - name: loan_repayments
       - name: transactions
-      - name: accm_completion_update
-     
+        

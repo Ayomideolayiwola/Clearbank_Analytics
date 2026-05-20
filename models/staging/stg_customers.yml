@@ -1,0 +1,48 @@
+version: 2
+
+models:
+  - name: stg_customers
+    description: "Staging model for clearbank's customers data. This model performs basic transformations and cleaning on the raw customers data ingested from ClearBank's operational database. It serves as the foundation for downstream models that will build upon this cleaned and standardized customers data."
+    columns:
+      - name: customer_id
+        description: "Primary key."
+        data_tests:
+          - not_null
+          - unique
+      - name: first_name
+        description: "Customer's first name."
+      - name: middle_name
+        description: "Customer's middle name, if applicable."
+      - name: last_name
+        description: "Customer's last name."
+      - name: date_of_birth
+        description: "Customer's date of birth."
+      - name: email
+        description: "Customer's email address."
+      - name: phone_number_1
+        description: "Customer's primary phone number."
+      - name: phone_number_2
+        description: "Customer's secondary phone number, if applicable."
+      - name: address_line_1
+        description: "First line of the customer's address."
+      - name: address_line_2
+        description: "Second line of the customer's address, if applicable."
+      - name: city
+        description: "City of the customer's address."
+      - name: country
+        description: "Country of the customer's address."
+      - name: kyc_status
+        description: "Know Your Customer (KYC) verification status for the customer (e.g., 'verified', 'pending', 'rejected')."
+      - name: customer_segment
+        description: "Customer segment classification (e.g., 'retail', 'corporate')."
+      - name: acquisition_channel
+        description: "Channel through which the customer was acquired (e.g., 'online', 'branch', 'referral')."
+      - name: referral_code_used
+        description: "Referral code used by the customer during account creation, if applicable."
+      - name: is_active
+        description: "Indicates whether the customer is currently active."
+      - name: created_at
+        description: "Timestamp when the record was created in the source system."
+      - name: updated_at
+        description: "Timestamp when the record was last updated in the source system."
+    
