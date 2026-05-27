@@ -24,7 +24,7 @@
 
 ClearBank is a mid-sized digital retail bank offering current accounts, savings accounts, loans, and debit cards to individual customers. The analytics engineering layer governs, tests, and documents the transformation of raw transactional data into a reliable, production-ready dimensional model.
 
-The raw data lives in a schema called `raw` in a cloud data warehouse (Snowflake / BigQuery / DuckDB). The analytics team has been querying these raw tables directly for months. This document defines the dimensional model that replaces ad-hoc SQL with a governed, tested, and reusable analytics layer.
+The raw data lives in a schema called `raw` in a cloud data warehouse (Snowflake). The analytics team has been querying these raw tables directly for months. This document defines the dimensional model that replaces ad-hoc SQL with a governed, tested, and reusable analytics layer.
 
 ---
 
