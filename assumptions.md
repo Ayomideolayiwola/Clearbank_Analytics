@@ -1,7 +1,7 @@
-
 # ClearBank — Analytics Engineering
 ## Phase 0: Dimensional Model Design
 
+> ⚠️ **Mandatory design deliverable.** This document must be reviewed and signed off before any dbt models are built.
 
 ---
 
@@ -11,314 +11,430 @@
 2. [Business Processes & Fact Tables](#business-processes--fact-tables)
    - [Fact 1: Transactions](#business-process-1-money-moving-through-accounts)
    - [Fact 2: Loan Repayments](#business-process-2-loan-repayment-activity)
-3. [Raw Source Table Assumptions](#raw-source-table-assumptions)
-4. [Dimension Table Designs](#dimension-table-designs)
+3. [Raw Source Tables](#raw-source-tables)
+4. [Dimensional Model Design](#dimensional-model-design)
+   - [Fact Tables](#fact-tables)
+   - [Dimension Tables](#dimension-tables)
 5. [Star Schema Diagrams](#star-schema-diagrams)
-6. [Design Decisions & Key Assumptions](#design-decisions--key-assumptions)
+6. [Design Decisions & Assumptions](#design-decisions--assumptions)
 
 ---
 
 ## Overview
 
-ClearBank is a mid-sized digital retail bank offering current accounts, savings accounts, loans, and debit cards to individual customers. The analytics engineering layer is being built on top of raw transactional data that has been migrated into a cloud data warehouse (Snowflake).
+ClearBank is a mid-sized digital retail bank offering current accounts, savings accounts, loans, and debit cards to individual customers. The analytics engineering layer governs, tests, and documents the transformation of raw transactional data into a reliable, production-ready dimensional model.
 
-This document defines the dimensional model — the governed, tested, and documented layer that sits between raw source tables and the BI/reporting layer.
+The raw data lives in a schema called `raw` in a cloud data warehouse (Snowflake / BigQuery / DuckDB). The analytics team has been querying these raw tables directly for months. This document defines the dimensional model that replaces ad-hoc SQL with a governed, tested, and reusable analytics layer.
 
 ---
 
 ## Business Processes & Fact Tables
 
+This section identifies the key **measurable business events** at ClearBank and defines a fact table for each. The grain of each fact table is stated explicitly before any SQL is written.
+
+---
+
 ### Business Process 1: Money moving through accounts
 
-| Property | Detail |
+| | |
 |---|---|
-| **Event measured** | A debit or credit transaction posted to a customer account |
-| **Examples** | Card purchases, ATM withdrawals, direct debits, incoming transfers, interest credits, fee charges |
+| **Event measured** | A debit or credit movement on a ClearBank customer account |
+| **Examples** | Card purchase, ATM withdrawal, bank transfer in/out, direct debit, standing order, fee charge |
 | **Fact table** | `fact_transactions` |
 
 #### Grain
 
-> **One row = one individual debit or credit event posted to a ClearBank account, on a specific calendar date, initiated via a specific channel.**
+> **One row = one transaction event posted against a ClearBank account, on a specific date, via a specific channel, in a specific direction (debit or credit).**
 
-The grain is at the individual transaction level. A single day of activity for a single account will produce multiple rows — one per posted transaction event.
+Each row represents a single, atomic movement of money. A customer who makes five purchases in one day produces five rows. Pending and failed transactions are excluded — only `settled` transactions are loaded.
 
 #### Measures
 
 | Measure | Additivity | Notes |
 |---|---|---|
-| `transaction_amount` | Fully additive | Stored in pence (integer). Negative = debit, positive = credit |
-| `running_balance` | Semi-additive | Balance after this event. Sum across accounts is meaningless; use `LAST_VALUE()` per account |
-| `fee_amount` | Fully additive | £0 (i.e. 0 pence) if no fee applies to this transaction |
-| `transaction_count` | Fully additive | Always `1` per row; summed in aggregations for volume metrics |
+| `transaction_amount` | Fully additive | Stored in the transaction currency |
+| `balance_after` | Semi-additive | Account balance snapshot after this event. Sum across accounts is meaningless — use `LAST_VALUE()` per account |
+| `transaction_count` | Fully additive | Always `1` per row; used for volume aggregations |
 
 ---
 
 ### Business Process 2: Loan repayment activity
 
-| Property | Detail |
+| | |
 |---|---|
-| **Event measured** | A payment event applied against a ClearBank loan |
-| **Examples** | Scheduled monthly repayment, ad-hoc overpayment, missed/partial payment, failed direct debit |
+| **Event measured** | A scheduled or actual repayment event against a ClearBank loan |
+| **Examples** | Monthly direct debit repayment, manual overpayment, missed payment, partial payment, late fee charged |
 | **Fact table** | `fact_loan_repayments` |
 
 #### Grain
 
-> **One row = one repayment event (scheduled or ad-hoc) against a specific ClearBank loan, recorded on a specific date, with the payment decomposed into its principal and interest components.**
+> **One row = one repayment event (scheduled or actual) against a specific loan, on a specific scheduled repayment date, recording what was due, what was paid, and how late the payment was.**
 
-A loan with 36 monthly repayments will eventually produce 36 rows in this fact table (plus any additional rows for failed attempts, reversals, or overpayments).
+Each loan with a 12-month term will produce up to 12 rows — one per scheduled repayment cycle — plus additional rows for any ad-hoc overpayments or failed payment retries.
 
 #### Measures
 
 | Measure | Additivity | Notes |
 |---|---|---|
-| `payment_amount` | Fully additive | Total cash received for this event, in pence |
-| `principal_portion` | Fully additive | Portion that reduces the outstanding loan balance |
-| `interest_portion` | Fully additive | Portion that services accrued interest |
-| `days_past_due` | **Non-additive** | Snapshot metric. Use `MAX()` (worst delinquency) or `AVG()` (portfolio health). **Never `SUM()`** |
-| `outstanding_balance` | Semi-additive | Remaining balance after this payment. Meaningful per loan; not across loans |
+| `amount_due` | Fully additive | What the customer was scheduled to pay |
+| `amount_paid` | Fully additive | What was actually received |
+| `principal_component` | Fully additive | Portion of payment reducing the loan balance |
+| `interest_component` | Fully additive | Portion of payment servicing interest |
+| `late_fee` | Fully additive | Fee charged for late payment; `0` if on time |
+| `days_late` | **Non-additive** | ⚠️ Snapshot metric. Use `MAX()` for worst delinquency or `AVG()` for portfolio health. **Never `SUM()`** |
+| `repayment_count` | Fully additive | Always `1` per row |
 
 ---
 
-## Raw Source Table Assumptions
+## Raw Source Tables
 
-The actual source data was not provided. The following column definitions represent assumptions made by the analytics engineer. **These must be validated against the real schema before the first `dbt run`.**
+The following six tables exist in the `raw` schema. Column definitions are taken directly from the source system.
+
+---
 
 ### `raw.customers`
-One row per customer registration event.
+One row per customer. Updated on CRM change events.
 
-| Column | Type | Assumption |
+| Column | Type | Notes |
 |---|---|---|
-| `customer_id` | `varchar` | Natural key from CRM; source-system UUID |
-| `first_name` | `varchar` | As supplied at KYC onboarding |
-| `last_name` | `varchar` | As supplied at KYC onboarding |
+| `customer_id` | `varchar` | Natural PK |
+| `first_name` | `varchar` | |
+| `middle_name` | `varchar` | Nullable |
+| `last_name` | `varchar` | |
 | `date_of_birth` | `date` | |
-| `email` | `varchar` | PII — will be hashed in the staging layer |
-| `phone` | `varchar` | PII — will be hashed in the staging layer |
-| `address_line_1` | `varchar` | |
-| `address_city` | `varchar` | |
-| `address_postcode` | `varchar` | UK postcode format |
-| `address_country` | `varchar` | ISO 3166-1 alpha-2 (default `GB`) |
+| `email` | `varchar` | PII — hashed in staging |
+| `phone_number_1` | `varchar` | PII — hashed in staging |
+| `phone_number_2` | `varchar` | PII — hashed in staging, nullable |
+| `address_line_1` | `varchar` | PII |
+| `address_line_2` | `varchar` | PII, nullable |
+| `city` | `varchar` | |
+| `country` | `varchar` | ISO 3166-1 alpha-2 |
 | `kyc_status` | `varchar` | `verified` / `pending` / `failed` |
 | `customer_segment` | `varchar` | `retail` / `premium` / `student` |
-| `created_at` | `timestamp` | Account opening timestamp (UTC) |
-| `updated_at` | `timestamp` | Last CRM update — used for SCD Type 2 detection |
+| `acquisition_channel` | `varchar` | `organic` / `referral` / `paid_social` / `branch` |
+| `referral_code_used` | `varchar` | Nullable; populated when `acquisition_channel = 'referral'` |
+| `is_active` | `boolean` | |
+| `created_at` | `timestamp` | |
+| `updated_at` | `timestamp` | Used for SCD Type 2 change detection |
 
 ---
 
 ### `raw.accounts`
-One row per account.
+One row per bank account.
 
-| Column | Type | Assumption |
+| Column | Type | Notes |
 |---|---|---|
-| `account_id` | `varchar` | Natural key |
+| `account_id` | `varchar` | Natural PK |
 | `customer_id` | `varchar` | FK → `raw.customers` |
 | `account_type` | `varchar` | `current` / `savings` / `isa` |
-| `product_name` | `varchar` | e.g. `Flex Saver`, `ClearCurrent` |
-| `sort_code` | `varchar` | UK 6-digit sort code |
-| `account_number` | `varchar` | UK 8-digit account number |
-| `currency` | `varchar` | Assumed `GBP` for all domestic accounts |
+| `account_number` | `varchar` | 8-digit UK account number |
+| `sort_code` | `varchar` | 6-digit UK sort code |
+| `iban` | `varchar` | International Bank Account Number |
+| `currency` | `varchar` | ISO 4217 (e.g. `GBP`) |
+| `account_status` | `varchar` | `active` / `dormant` / `closed` / `suspended` |
+| `current_balance` | `decimal` | Current ledger balance |
+| `available_balance` | `decimal` | Balance available for spending (excludes pending holds) |
+| `interest_rate` | `decimal` | Annual interest rate (e.g. `0.035` for 3.5%) |
 | `opened_date` | `date` | |
-| `closed_date` | `date` | `NULL` if still active |
-| `status` | `varchar` | `active` / `dormant` / `closed` |
+| `closed_date` | `date` | Nullable; populated when account is closed |
+| `created_at` | `timestamp` | |
+| `updated_at` | `timestamp` | |
 
 ---
 
 ### `raw.transactions`
-One row per posted transaction event.
+One row per transaction event. Highest-volume table.
 
-| Column | Type | Assumption |
+| Column | Type | Notes |
 |---|---|---|
-| `transaction_id` | `varchar` | Natural key; source-system UUID |
+| `transaction_id` | `varchar` | Natural PK |
 | `account_id` | `varchar` | FK → `raw.accounts` |
-| `transaction_datetime` | `timestamp` | UTC. The date part drives `date_key` in the fact table |
-| `value_date` | `date` | Settlement date — may differ from transaction date |
-| `amount` | `integer` | In pence. Negative = debit, positive = credit |
-| `running_balance` | `integer` | In pence, after this transaction is applied |
-| `transaction_type` | `varchar` | `purchase` / `transfer_in` / `transfer_out` / `atm` / `direct_debit` / `fee` / `interest` |
-| `channel` | `varchar` | `mobile_app` / `web` / `atm` / `branch` / `api` |
-| `merchant_name` | `varchar` | Nullable; populated for card purchases only |
+| `customer_id` | `varchar` | FK → `raw.customers` |
+| `transaction_date` | `date` | Calendar date of the transaction |
+| `transaction_type` | `varchar` | `purchase` / `transfer` / `atm_withdrawal` / `direct_debit` / `standing_order` / `fee` / `interest` |
+| `counterpart_name` | `varchar` | Nullable; name of the other party |
+| `counterpart_acc_no` | `varchar` | Nullable; other party's account number |
+| `counterpart_sort_code` | `varchar` | Nullable; other party's sort code |
+| `direction` | `varchar` | `debit` / `credit` |
+| `transaction_amount` | `decimal` | Absolute value; direction determined by `direction` column |
+| `currency` | `varchar` | ISO 4217 |
+| `balance_after` | `decimal` | Account balance after this transaction |
+| `status` | `varchar` | `settled` / `pending` / `failed` / `reversed` |
+| `channel` | `varchar` | `mobile_app` / `web` / `atm` / `branch` / `api` / `pos` |
 | `reference` | `varchar` | Free-text payment reference |
-| `status` | `varchar` | `posted` / `pending` / `reversed` |
+| `initiated_at` | `timestamp` | When the transaction was initiated |
+| `settled_at` | `timestamp` | Nullable; when the transaction was settled |
+| `created_at` | `timestamp` | |
 
 ---
 
 ### `raw.loans`
 One row per loan agreement.
 
-| Column | Type | Assumption |
+| Column | Type | Notes |
 |---|---|---|
-| `loan_id` | `varchar` | Natural key |
+| `loan_id` | `varchar` | Natural PK |
 | `customer_id` | `varchar` | FK → `raw.customers` |
-| `loan_type` | `varchar` | `personal` / `auto` / `overdraft` |
-| `original_amount` | `integer` | In pence |
-| `annual_interest_rate` | `decimal(6,4)` | e.g. `0.0749` for 7.49% APR |
-| `term_months` | `integer` | |
-| `disbursement_date` | `date` | When funds were released to the customer |
-| `maturity_date` | `date` | Expected final repayment date |
-| `status` | `varchar` | `active` / `settled` / `defaulted` / `written_off` |
+| `account_id` | `varchar` | FK → `raw.accounts` — the disbursement account |
+| `loan_type` | `varchar` | `personal` / `auto` / `mortgage` / `overdraft` |
+| `applied_amount` | `decimal` | Amount the customer applied for |
+| `approved_amount` | `decimal` | Amount approved (may differ from applied) |
+| `disbursed_amount` | `decimal` | Amount actually paid out |
+| `upfront_fee` | `decimal` | Origination/arrangement fee |
+| `currency` | `varchar` | ISO 4217 |
+| `interest_rate` | `decimal` | Annual interest rate |
+| `tenure_months` | `integer` | Loan term in months |
+| `total_repayable` | `decimal` | Total amount due over the life of the loan |
+| `loan_status` | `varchar` | `active` / `settled` / `defaulted` / `written_off` / `pending_approval` |
+| `application_date` | `date` | |
+| `approval_date` | `date` | Nullable |
+| `disbursement_date` | `date` | Nullable; when funds were released |
+| `created_at` | `timestamp` | |
+| `updated_at` | `timestamp` | |
 
 ---
 
 ### `raw.loan_repayments`
-One row per repayment event.
+One row per repayment event against a loan.
 
-| Column | Type | Assumption |
+| Column | Type | Notes |
 |---|---|---|
-| `repayment_id` | `varchar` | Natural key |
+| `repayment_id` | `varchar` | Natural PK |
 | `loan_id` | `varchar` | FK → `raw.loans` |
-| `payment_date` | `date` | Date payment was applied |
-| `payment_amount` | `integer` | In pence |
-| `principal_portion` | `integer` | In pence |
-| `interest_portion` | `integer` | In pence |
-| `outstanding_balance` | `integer` | In pence, after this payment |
-| `days_past_due` | `integer` | `0` if paid on time |
+| `customer_id` | `varchar` | FK → `raw.customers` |
+| `account_id` | `varchar` | FK → `raw.accounts` — account debited |
+| `scheduled_repayment_date` | `date` | The date repayment was due |
+| `actual_payment_date` | `date` | Nullable; date payment was received |
+| `amount_due` | `decimal` | Amount scheduled to be paid |
+| `amount_paid` | `decimal` | Amount actually received |
+| `principal_component` | `decimal` | Portion reducing the loan balance |
+| `interest_component` | `decimal` | Portion servicing interest |
+| `late_fee` | `decimal` | `0` if on time |
+| `days_late` | `integer` | `0` if on time — ⚠️ non-additive |
 | `payment_method` | `varchar` | `direct_debit` / `manual_transfer` / `card` |
-| `status` | `varchar` | `completed` / `failed` / `reversed` |
+| `repayment_status` | `varchar` | `completed` / `failed` / `partial` / `reversed` |
+| `created_at` | `timestamp` | |
+| `updated_at` | `timestamp` | |
 
 ---
 
 ### `raw.cards`
-One row per card issued.
-
-| Column | Type | Assumption |
-|---|---|---|
-| `card_id` | `varchar` | Natural key |
-| `account_id` | `varchar` | FK → `raw.accounts` |
-| `card_type` | `varchar` | `debit` / `virtual` |
-| `issued_date` | `date` | |
-| `expiry_date` | `date` | |
-| `status` | `varchar` | `active` / `blocked` / `cancelled` |
-
----
-
-## Dimension Table Designs
-
-### `dim_customer` — SCD Type 2
-
-Customers can change segment, address, and KYC status over time. SCD Type 2 preserves history so that a transaction in 2022 is correctly associated with the customer's segment *at that time*, not today's value.
+One row per card issued to a customer.
 
 | Column | Type | Notes |
 |---|---|---|
-| `customer_key` | `integer` | Surrogate PK (auto-increment) |
-| `customer_id` | `varchar` | Natural key from source |
-| `first_name` | `varchar` | |
-| `last_name` | `varchar` | |
-| `full_name` | `varchar` | Derived: `first_name \|\| ' ' \|\| last_name` |
-| `date_of_birth` | `date` | |
-| `age_band` | `varchar` | Derived: `18-24`, `25-34`, `35-44`, etc. |
-| `kyc_status` | `varchar` | |
-| `customer_segment` | `varchar` | |
-| `address_city` | `varchar` | |
-| `address_postcode` | `varchar` | |
-| `valid_from` | `date` | SCD Type 2 effective start date |
-| `valid_to` | `date` | SCD Type 2 effective end date (`9999-12-31` if current) |
-| `is_current` | `boolean` | `TRUE` for the active record |
-
-> **⚠️ PII Note:** `email` and `phone` are present in `raw.customers` but are **not** surfaced in `dim_customer`. They are hashed in staging (`stg_customers`) and omitted from the dimension entirely. Analytics queries do not require contact details.
+| `card_id` | `varchar` | Natural PK |
+| `account_id` | `varchar` | FK → `raw.accounts` |
+| `customer_id` | `varchar` | FK → `raw.customers` |
+| `card_type` | `varchar` | `debit` / `virtual` / `prepaid` |
+| `card_network` | `varchar` | `visa` / `mastercard` |
+| `card_status` | `varchar` | `active` / `blocked` / `cancelled` / `expired` |
+| `is_contactless_enabled` | `boolean` | |
+| `is_online_enabled` | `boolean` | |
+| `is_international_enabled` | `boolean` | |
+| `daily_withdrawal_limit` | `decimal` | ATM withdrawal limit |
+| `issued_date` | `date` | |
+| `activation_date` | `date` | Nullable; populated when customer activates card |
+| `expires_at` | `date` | |
+| `cancelled_at` | `timestamp` | Nullable |
+| `created_at` | `timestamp` | |
+| `updated_at` | `timestamp` | |
 
 ---
 
-### `dim_account` — SCD Type 2
+## Dimensional Model Design
 
-Account status and product name can change (e.g. an account is closed, or a product is migrated). SCD Type 2 applied.
+### Fact Tables
+
+#### `fact_transactions`
+
+| Column | Type | Description |
+|---|---|---|
+| `transaction_key` | `integer` | Surrogate PK |
+| `transaction_id` | `varchar` | Natural key (kept for audit) |
+| `account_key` | `integer` | FK → `dim_account` |
+| `customer_key` | `integer` | FK → `dim_customer` |
+| `date_key` | `integer` | FK → `dim_date` (YYYYMMDD) |
+| `channel_key` | `integer` | FK → `dim_channel` |
+| `transaction_type_key` | `integer` | FK → `dim_transaction_type` |
+| `counterpart_name` | `varchar` | Degenerate dimension |
+| `reference` | `varchar` | Degenerate dimension |
+| `direction` | `varchar` | `debit` / `credit` |
+| `transaction_amount` | `decimal` | Measure — fully additive |
+| `balance_after` | `decimal` | Measure — semi-additive |
+| `transaction_count` | `integer` | Always `1` — for volume aggregations |
+| `initiated_at` | `timestamp` | |
+| `settled_at` | `timestamp` | |
+
+---
+
+#### `fact_loan_repayments`
+
+| Column | Type | Description |
+|---|---|---|
+| `repayment_key` | `integer` | Surrogate PK |
+| `repayment_id` | `varchar` | Natural key (kept for audit) |
+| `loan_key` | `integer` | FK → `dim_loan` |
+| `customer_key` | `integer` | FK → `dim_customer` ✦ conformed |
+| `account_key` | `integer` | FK → `dim_account` |
+| `date_key` | `integer` | FK → `dim_date` (scheduled date) ✦ conformed |
+| `payment_method` | `varchar` | Degenerate dimension |
+| `repayment_status` | `varchar` | Degenerate dimension |
+| `amount_due` | `decimal` | Measure — fully additive |
+| `amount_paid` | `decimal` | Measure — fully additive |
+| `principal_component` | `decimal` | Measure — fully additive |
+| `interest_component` | `decimal` | Measure — fully additive |
+| `late_fee` | `decimal` | Measure — fully additive |
+| `days_late` | `integer` | Measure — ⚠️ **non-additive** |
+| `delinquency_bucket` | `varchar` | Derived: `Current` / `1–30 days` / `31–60 days` / `60+ days` |
+| `is_late` | `boolean` | Derived: `days_late > 0` |
+| `repayment_count` | `integer` | Always `1` |
+
+---
+
+### Dimension Tables
+
+#### `dim_customer` — SCD Type 2
+
+Tracks changes to `kyc_status`, `customer_segment`, `city`, and `is_active` over time. Historical accuracy is required so that transactions are attributed to the correct customer profile at the time they occurred.
+
+| Column | Type | Notes |
+|---|---|---|
+| `customer_key` | `integer` | Surrogate PK |
+| `customer_id` | `varchar` | Natural key |
+| `first_name` | `varchar` | |
+| `last_name` | `varchar` | |
+| `full_name` | `varchar` | Derived |
+| `date_of_birth` | `date` | |
+| `age_band` | `varchar` | Derived: `18–24` / `25–34` / `35–44` etc. |
+| `city` | `varchar` | |
+| `country` | `varchar` | |
+| `kyc_status` | `varchar` | |
+| `customer_segment` | `varchar` | |
+| `acquisition_channel` | `varchar` | |
+| `is_active` | `boolean` | |
+| `valid_from` | `date` | SCD Type 2 |
+| `valid_to` | `date` | `9999-12-31` if current record |
+| `is_current` | `boolean` | |
+
+> ⚠️ **PII policy:** `email`, `phone_number_1`, `phone_number_2`, `address_line_1`, `address_line_2` are present in `raw.customers` but are **excluded from `dim_customer`**. They are hashed in the staging layer (`stg_customers`) and never propagated into the analytics schema.
+
+---
+
+#### `dim_account` — SCD Type 2
+
+Tracks changes to `account_status` and `interest_rate` over time.
 
 | Column | Type | Notes |
 |---|---|---|
 | `account_key` | `integer` | Surrogate PK |
 | `account_id` | `varchar` | Natural key |
-| `account_type` | `varchar` | |
-| `product_name` | `varchar` | |
+| `customer_id` | `varchar` | FK reference (natural key) |
+| `account_type` | `varchar` | `current` / `savings` / `isa` |
 | `currency` | `varchar` | |
+| `account_status` | `varchar` | |
+| `interest_rate` | `decimal` | |
 | `opened_date` | `date` | |
 | `closed_date` | `date` | |
-| `status` | `varchar` | |
+| `is_active` | `boolean` | Derived |
 | `valid_from` | `date` | |
 | `valid_to` | `date` | |
 | `is_current` | `boolean` | |
 
 ---
 
-### `dim_date` — Static, Conformed ✦
+#### `dim_loan` — Type 1
 
-A spine of every calendar date from `2015-01-01` to `2030-12-31`, pre-populated at build time. Not derived from source data — generated via a dbt macro (e.g. `dbt_utils.date_spine`).
-
-**This is a conformed dimension.** It is shared by both `fact_transactions` and `fact_loan_repayments`, enabling cross-process analysis on a single, consistent date axis.
-
-| Column | Type | Notes |
-|---|---|---|
-| `date_key` | `integer` | Surrogate PK in `YYYYMMDD` format (e.g. `20240315`) |
-| `full_date` | `date` | |
-| `day_of_week` | `varchar` | `Monday`, `Tuesday`, etc. |
-| `day_of_week_num` | `integer` | `1` (Mon) to `7` (Sun) |
-| `week_number` | `integer` | ISO week number |
-| `month_num` | `integer` | 1–12 |
-| `month_name` | `varchar` | `January`, etc. |
-| `quarter` | `integer` | 1–4 |
-| `year` | `integer` | Calendar year |
-| `fiscal_year` | `integer` | ClearBank fiscal year (April start) |
-| `fiscal_quarter` | `integer` | Relative to April start |
-| `is_weekend` | `boolean` | `TRUE` for Saturday and Sunday |
-| `is_uk_bank_holiday` | `boolean` | Pre-loaded from GOV.UK bank holiday API |
-
-> **Why `YYYYMMDD` integer, not a `DATE` FK?** Integer joins are marginally faster on most warehouses, and the format is human-readable when browsing raw fact data. Either approach is valid; this is the chosen convention for ClearBank.
-
----
-
-### `dim_channel` — Type 1
-
-The set of channels changes rarely. Type 1 (overwrite in place) is sufficient. If a channel is renamed, the old name is updated and history is not preserved — this is acceptable for a small reference table.
-
-| Column | Type | Notes |
-|---|---|---|
-| `channel_key` | `integer` | Surrogate PK |
-| `channel_name` | `varchar` | `Mobile App`, `Web`, `ATM`, `Branch`, `API` |
-| `channel_type` | `varchar` | `digital` / `physical` |
-| `is_digital` | `boolean` | Derived from `channel_type` |
-
----
-
-### `dim_transaction_type` — Type 1
-
-A small lookup dimension. Adds a `direction` and `category` column, enabling analysts to slice by broad transaction category without string-matching on raw `transaction_type` values in every query.
-
-| Column | Type | Notes |
-|---|---|---|
-| `txn_type_key` | `integer` | Surrogate PK |
-| `type_name` | `varchar` | Raw value from source (e.g. `direct_debit`) |
-| `type_label` | `varchar` | Display label (e.g. `Direct Debit`) |
-| `category` | `varchar` | `payment` / `transfer` / `fee` / `interest` / `cash` |
-| `direction` | `varchar` | `credit` / `debit` |
-
----
-
-### `dim_loan` — Type 1
-
-Loan terms are fixed at origination. Interest rate and term do not change for a given loan agreement. Type 1 is correct.
+Loan terms are fixed at origination — Type 1 is correct. No history needs to be preserved.
 
 | Column | Type | Notes |
 |---|---|---|
 | `loan_key` | `integer` | Surrogate PK |
 | `loan_id` | `varchar` | Natural key |
+| `customer_id` | `varchar` | FK reference |
 | `loan_type` | `varchar` | |
-| `original_amount` | `integer` | In pence |
-| `annual_interest_rate` | `decimal(6,4)` | |
-| `term_months` | `integer` | |
+| `approved_amount` | `decimal` | |
+| `disbursed_amount` | `decimal` | |
+| `interest_rate` | `decimal` | |
+| `tenure_months` | `integer` | |
+| `total_repayable` | `decimal` | |
+| `loan_status` | `varchar` | |
 | `disbursement_date` | `date` | |
-| `maturity_date` | `date` | |
-| `status` | `varchar` | |
+| `loan_size_band` | `varchar` | Derived: `Under £1k` / `£1k–£5k` etc. |
+| `rate_band` | `varchar` | Derived: `Under 5%` / `5–10%` etc. |
 
 ---
 
-### `dim_repayment_status` — Type 1
+#### `dim_date` — Static, Conformed ✦
 
-A small junk/lookup dimension grouping repayment outcomes into delinquency buckets. Decouples the delinquency classification logic from the fact table and allows easy re-bucketing without reloading facts.
+Pre-populated spine from `2015-01-01` to `2030-12-31`. Not sourced from any raw table — generated via `dbt_utils.date_spine`. Shared by both fact tables, making it the primary **conformed dimension** in the model.
 
 | Column | Type | Notes |
 |---|---|---|
-| `status_key` | `integer` | Surrogate PK |
-| `status_name` | `varchar` | `completed` / `failed` / `reversed` |
-| `is_delinquent` | `boolean` | `TRUE` if `days_past_due > 0` at time of event |
-| `delinquency_bucket` | `varchar` | `current` / `1-30 days` / `31-60 days` / `60+ days` / `written-off` |
+| `date_key` | `integer` | Surrogate PK — YYYYMMDD format |
+| `full_date` | `date` | |
+| `day_of_week_name` | `varchar` | `Monday` etc. |
+| `day_of_week_num` | `integer` | 1 (Mon) to 7 (Sun) |
+| `month_num` | `integer` | 1–12 |
+| `month_name` | `varchar` | |
+| `calendar_quarter` | `integer` | 1–4 |
+| `calendar_year` | `integer` | |
+| `fiscal_year` | `integer` | ClearBank fiscal year — April start |
+| `fiscal_quarter` | `integer` | Relative to April |
+| `is_weekend` | `boolean` | |
+| `is_uk_bank_holiday` | `boolean` | |
+| `month_start_date` | `date` | |
+| `month_end_date` | `date` | |
+
+---
+
+#### `dim_channel` — Type 1
+
+| Column | Type | Notes |
+|---|---|---|
+| `channel_key` | `integer` | Surrogate PK |
+| `channel_name` | `varchar` | `mobile_app` / `web` / `atm` / `branch` / `api` / `pos` |
+| `channel_type` | `varchar` | `digital` / `physical` |
+| `is_digital` | `boolean` | Derived |
+
+---
+
+#### `dim_transaction_type` — Type 1
+
+Adds `category` and `direction` to avoid raw string matching in every downstream query.
+
+| Column | Type | Notes |
+|---|---|---|
+| `transaction_type_key` | `integer` | Surrogate PK |
+| `type_name` | `varchar` | Raw value from source |
+| `type_label` | `varchar` | Display label |
+| `category` | `varchar` | `payment` / `transfer` / `cash` / `fee` / `interest` |
+| `direction` | `varchar` | `debit` / `credit` |
+
+---
+
+#### `dim_card` — Type 2
+
+Card attributes like `card_status`, `is_contactless_enabled`, and limits can change. SCD Type 2 preserves the card state at the time of any transaction.
+
+| Column | Type | Notes |
+|---|---|---|
+| `card_key` | `integer` | Surrogate PK |
+| `card_id` | `varchar` | Natural key |
+| `account_id` | `varchar` | FK reference |
+| `customer_id` | `varchar` | FK reference |
+| `card_type` | `varchar` | |
+| `card_network` | `varchar` | |
+| `card_status` | `varchar` | |
+| `is_contactless_enabled` | `boolean` | |
+| `is_online_enabled` | `boolean` | |
+| `is_international_enabled` | `boolean` | |
+| `daily_withdrawal_limit` | `decimal` | |
+| `issued_date` | `date` | |
+| `expires_at` | `date` | |
+| `valid_from` | `date` | |
+| `valid_to` | `date` | |
+| `is_current` | `boolean` | |
 
 ---
 
@@ -327,120 +443,124 @@ A small junk/lookup dimension grouping repayment outcomes into delinquency bucke
 ### Schema 1 — `fact_transactions`
 
 ```
-                    ┌─────────────────┐
-                    │  dim_customer   │
-                    │  (Type 2 SCD)   │
-                    └────────┬────────┘
-                             │ customer_key
-              ┌──────────────▼──────────────────┐
-┌─────────────┤        fact_transactions         ├─────────────┐
-│             │  transaction_key (PK)            │             │
-│             │  account_key     (FK)            │             │
-│  dim_account│  customer_key    (FK)            │dim_channel  │
-│  (Type 2)   │  date_key        (FK)            │(Type 1)     │
-└─────────────┤  channel_key     (FK)            ├─────────────┘
-              │  txn_type_key    (FK)            │
-              │  ────────────────────            │
-              │  transaction_amount              │
-              │  running_balance                 │
-              │  fee_amount                      │
-              └──────────────┬──────────────────-┘
-                             │ date_key
-                    ┌────────▼────────┐
-                    │    dim_date     │
-                    │  ✦ conformed   │
-                    └─────────────────┘
+         ┌──────────────────┐        ┌─────────────────────┐
+         │   dim_customer   │        │     dim_account      │
+         │  ✦ conformed     │        │    (SCD Type 2)      │
+         └────────┬─────────┘        └──────────┬──────────┘
+                  │ customer_key                 │ account_key
+                  │       ┌─────────────────────┘
+         ┌────────▼───────▼──────────────────────────┐
+         │              fact_transactions             │
+         │  transaction_key    (PK)                   │
+         │  account_key        (FK) ──► dim_account   │
+         │  customer_key       (FK) ──► dim_customer  │
+         │  date_key           (FK) ──► dim_date      │
+         │  channel_key        (FK) ──► dim_channel   │
+         │  transaction_type_key(FK)──► dim_txn_type  │
+         │  ─────────────────────────────────────     │
+         │  transaction_amount   [additive]           │
+         │  balance_after        [semi-additive]      │
+         │  transaction_count    [additive]           │
+         └──────────────────┬────────────────────────┘
+                            │ date_key
+               ┌────────────▼────────────┐
+               │        dim_date         │
+               │      ✦ conformed        │
+               └─────────────────────────┘
 ```
+
+---
 
 ### Schema 2 — `fact_loan_repayments`
 
 ```
-┌─────────────────┐                    ┌─────────────────┐
-│    dim_loan     │                    │  dim_customer   │
-│    (Type 1)     │                    │  ✦ conformed    │
-└────────┬────────┘                    └────────┬────────┘
-         │ loan_key                    customer_key │
-         │         ┌──────────────────┐            │
-         └─────────►  fact_loan_      ◄────────────┘
-                   │  repayments      │
-                   │                  │
-  dim_repayment_   │  repayment_key   │
-  status ──────────►  loan_key (FK)   │
-  (Type 1)         │  customer_key FK │
-                   │  date_key (FK)   │
-                   │  status_key (FK) │
-                   │  ─────────────── │
-                   │  payment_amount  │
-                   │  principal_      │
-                   │    portion       │
-                   │  interest_       │
-                   │    portion       │
-                   │  days_past_due   │
-                   │  outstanding_    │
-                   │    balance       │
-                   └────────┬─────────┘
-                            │ date_key
-                   ┌────────▼────────┐
-                   │    dim_date     │
-                   │  ✦ conformed   │
-                   └─────────────────┘
+   ┌───────────────┐                        ┌──────────────────┐
+   │   dim_loan    │                        │   dim_customer   │
+   │   (Type 1)    │                        │   ✦ conformed    │
+   └───────┬───────┘                        └────────┬─────────┘
+           │ loan_key                    customer_key │
+           │        ┌────────────────────────────────┘
+  ┌────────▼────────▼─────────────────────────────────┐
+  │                fact_loan_repayments                │
+  │  repayment_key      (PK)                          │
+  │  loan_key           (FK) ──► dim_loan             │
+  │  customer_key       (FK) ──► dim_customer         │
+  │  account_key        (FK) ──► dim_account          │
+  │  date_key           (FK) ──► dim_date             │
+  │  ─────────────────────────────────────────────    │
+  │  amount_due           [additive]                  │
+  │  amount_paid          [additive]                  │
+  │  principal_component  [additive]                  │
+  │  interest_component   [additive]                  │
+  │  late_fee             [additive]                  │
+  │  days_late            [⚠️ NON-ADDITIVE]           │
+  │  repayment_count      [additive]                  │
+  └──────────────────┬────────────────────────────────┘
+                     │ date_key
+        ┌────────────▼────────────┐
+        │        dim_date         │
+        │      ✦ conformed        │
+        └─────────────────────────┘
 ```
+
+---
 
 ### Conformed Dimensions
 
-| Dimension | Shared by |
-|---|---|
-| `dim_date` | `fact_transactions` and `fact_loan_repayments` |
-| `dim_customer` | `fact_transactions` and `fact_loan_repayments` |
-
-Conformed dimensions are the foundation of **cross-process analysis** — for example: *"For customers currently in arrears on a loan, what is their card spending pattern over the last 90 days?"* This query joins both fact tables through the shared `dim_customer` and `dim_date` dimensions without any hacks.
+| Dimension | Used by | Why conformed |
+|---|---|---|
+| `dim_date` | `fact_transactions` + `fact_loan_repayments` | Consistent time axis across all business processes |
+| `dim_customer` | `fact_transactions` + `fact_loan_repayments` | Enables cross-process queries e.g. "customers in arrears — what is their spending pattern?" |
+| `dim_account` | `fact_transactions` + `fact_loan_repayments` | The same account can have transactions and a loan attached |
 
 ---
 
-## Design Decisions & Key Assumptions
+## Design Decisions & Assumptions
 
-### Amounts stored as integers in pence
+### Amounts kept as decimals (not pence integers)
 
-All monetary columns (`transaction_amount`, `payment_amount`, `principal_portion`, etc.) are stored as integers representing pence, not as `DECIMAL` or `FLOAT`. This avoids IEEE 754 floating-point rounding errors entirely. `£10.49` is stored as `1049`.
-
-All formatting to `£` with two decimal places is handled in the BI tool or reporting layer, not in SQL.
+The source columns (`transaction_amount`, `amount_due`, `amount_paid` etc.) are defined as `decimal` in the raw tables. They are preserved as decimals throughout the model. If float precision becomes an issue in production, a migration to integer pence storage can be applied at the staging layer without touching the fact tables.
 
 ### Surrogate keys on all dimensions
 
-Natural keys from the source system (`customer_id`, `account_id`, etc.) are preserved as attributes in the dimension table but **surrogate integer keys drive all joins**. This:
+Natural keys (`customer_id`, `account_id` etc.) are preserved as attributes but **integer surrogate keys drive all joins**. This is required for SCD Type 2 — a single `customer_id` will have multiple surrogate keys, one per historical version — and insulates the warehouse from upstream key changes.
 
-- Insulates the warehouse from upstream key changes or replatforming
-- Is required for SCD Type 2 (a single `customer_id` will have multiple surrogate keys — one per version)
-- Produces smaller, faster join columns than UUIDs
+### `dim_date` uses `YYYYMMDD` integer as key
 
-### `dim_date` uses `YYYYMMDD` integer as the key
+`date_key` is an integer in `YYYYMMDD` format (e.g. `20240315`) rather than a `DATE` type foreign key. This is human-readable when browsing fact data, performs well on all major warehouses, and is the established convention for dimensional modelling.
 
-`date_key` is an integer in `YYYYMMDD` format rather than a `DATE` type. This is human-readable when browsing fact data, performs well on all major warehouses, and decouples the date dimension from SQL `DATE` casting semantics across dialects.
+### `fact_transactions` filters to `status = 'settled'` only
 
-### `fact_transactions` excludes pending and reversed transactions
+Only settled transactions are loaded into `fact_transactions`. Pending transactions are excluded to avoid double-counting. Reversed transactions produce an offsetting row with a negative amount, preserving the audit trail while keeping aggregate sums correct. Failed transactions are excluded entirely.
 
-Only transactions with `status = 'posted'` are loaded into `fact_transactions`. Pending transactions are excluded to avoid double-counting. Reversed transactions are modelled as **offsetting rows** (a reversal produces a row with a negative amount in the opposite direction), preserving the full audit trail while keeping aggregate sums correct.
+### `days_late` is explicitly documented as non-additive
 
-### `days_past_due` is explicitly non-additive
+Every model YAML file and this document flags `days_late` as non-additive. Correct aggregations:
 
-This is documented in the model's dbt schema YAML and in this document so analysts do not accidentally `SUM()` it. Correct aggregations:
-
-| Use case | Aggregation |
+| Use case | Correct SQL |
 |---|---|
-| Worst delinquency in a period | `MAX(days_past_due)` |
-| Portfolio health trend | `AVG(days_past_due)` |
-| Count of accounts in arrears | `COUNT_IF(days_past_due > 0)` |
+| Worst delinquency in a period | `MAX(days_late)` |
+| Average days late across portfolio | `AVG(days_late)` |
+| Count of late repayments | `COUNT_IF(days_late > 0)` |
+| ❌ Total days late (meaningless) | ~~`SUM(days_late)`~~ |
 
-### SCD Type 2 on `dim_customer` and `dim_account`
+### SCD Type 2 on `dim_customer`, `dim_account`, `dim_card`
 
-Type 2 is chosen for these dimensions because **historical accuracy matters for regulatory and audit reporting**. A transaction in January 2023 must be attributed to the customer's segment as it was in January 2023, not as it is today. The `is_current = TRUE` filter is applied in the dbt model to retrieve present-day attributes for operational dashboards.
+Type 2 is applied to dimensions where **historical accuracy matters for regulatory reporting**. A transaction from 2022 must be attributed to the customer's segment as it was in 2022. The `is_current = true` filter retrieves present-day attributes for operational dashboards.
 
 ### PII is hashed in staging, not surfaced in dimensions
 
-`email` and `phone` from `raw.customers` are hashed using a one-way function (e.g. `SHA-256`) in the `stg_customers` staging model and are not propagated to `dim_customer`. This ensures the analytics layer is compliant with ClearBank's data minimisation obligations under UK GDPR.
+`email`, `phone_number_1`, `phone_number_2`, `address_line_1`, and `address_line_2` from `raw.customers` are one-way hashed (SHA-256) in `stg_customers` and excluded from `dim_customer`. This ensures the analytics layer complies with ClearBank's data minimisation obligations under UK GDPR. The hashes are available in staging for identity resolution use cases that have been explicitly approved.
+
+### `dim_card` is included as a dimension
+
+The `raw.cards` table contains several boolean flags (`is_contactless_enabled`, `is_online_enabled`, `is_international_enabled`) that are meaningful analytical attributes — for example, "what proportion of fraud transactions came from cards with international payments enabled?" Modelling cards as a dimension enables this slice without joining to the raw table in every query.
+
+### `applied_amount` vs `approved_amount` vs `disbursed_amount`
+
+The `raw.loans` table records all three stages. `dim_loan` carries all three so analysts can measure approval rates (`approved_amount / applied_amount`) and utilisation (`disbursed_amount / approved_amount`) without going back to raw.
 
 ---
 
-*Document prepared by: Analytics Engineering*
-*Status: Draft — pending schema validation against production raw tables*
-*Next step: Phase 1 — dbt project structure and staging models*
+*Document status: **Final — ready for dbt build***
+*Next phase: Phase 1 — dbt project structure, staging models, and source freshness tests*
